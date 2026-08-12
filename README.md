@@ -29,27 +29,22 @@ The sandbox is intended for testing and modifying:
 
 Real ADS deployment requires system-specific modalities, thresholds, evaluators.
 
-## Requirements
-
-- GHC / Haskell
-- Required Haskell libraries listed in the project files
-- A laptop that turns on and works
-
-## Running
-
-## Prerequisites
+## Prerequisites/Requirements
 
 You will need **VS Code** and one of the following development environments:
 
 - **GHC / GHCup** installed locally, if building outside a container.
 - **Docker Desktop**, if using the VS Code Dev Container.
 - **GitHub Codespaces** access, if using a cloud-based development environment.
+- **Laptop**, you need a functioning laptop that can handle code.
 
-## Option A: Local VS Code Setup
+## Running
+
+# Option A: Local VS Code Setup
 
 Use this option if you have GHC installed locally and want to build without Docker.
 
-### Clone the repository
+# Clone the repository
 
 ```bash
 git clone https://github.com/anish-chilakala/modal-depth-ADS-safety-method.git
@@ -58,13 +53,13 @@ git fetch origin add-devcontainer-vscode-config
 git checkout -b add-devcontainer-vscode-config origin/add-devcontainer-vscode-config
 ```
 
-### Open in VS Code
+# Open in VS Code
 
 ```bash
 code .
 ```
 
-### Build and run
+# Build and run
 
 If GHC is installed locally:
 
@@ -80,17 +75,17 @@ Alternatively, in VS Code:
 3. Select **Run Task** → **Run (Make)** to run it.
 4. You may also use the Run and Debug view to start the **Run Haskell executable** configuration.
 
-## Option B: VS Code Dev Container
+# Option B: VS Code Dev Container
 
 This is the recommended option because it provides a reproducible environment and does not require a local Haskell installation.
 
-### Requirements
+# Requirements
 
 - Docker Desktop
 - VS Code
 - The **Dev Containers** extension for VS Code
 
-### Setup
+# Setup
 
 Clone and check out the repository branch:
 
