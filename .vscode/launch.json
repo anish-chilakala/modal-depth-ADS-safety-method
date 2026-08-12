@@ -1,0 +1,14 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run Haskell executable",
+      "type": "pwa-node",
+      "request": "launch",
+      "preLaunchTask": "Build (Make)",
+      "program": "${workspaceFolder}/modal-depth-experiment",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
+    }
+  ]
+}

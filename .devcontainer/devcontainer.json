@@ -1,0 +1,16 @@
+{
+  "name": "Haskell (ghcup)",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  "workspaceFolder": "/workspace",
+  "postCreateCommand": "set -eux; curl --proto '=https' --tlsv1.2 -sSf https://get-ghcup.haskell.org | sh -s -- -y; export PATH=$HOME/.ghcup/bin:$PATH; ~/.ghcup/bin/ghcup install ghc || true; ~/.ghcup/bin/ghcup install cabal || true; ~/.ghcup/bin/ghcup install hls || true; ~/.ghcup/bin/ghcup install cabal-install || true; cabal --version || true",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "haskell.haskell",
+        "ms-vscode.cpptools",
+        "eamodio.gitlens"
+      ]
+    }
+  },
+  "remoteUser": "vscode"
+}
