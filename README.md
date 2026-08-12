@@ -37,7 +37,9 @@ You will need VS Code and one of the following development environments:
 - **Docker Desktop**, if using the VS Code Dev Container
 - **GitHub Codespaces** access, if using a cloud development environment
 
-## Clone the Repository
+## Running the Project
+
+### Clone the Repository
 
 Clone the repository and check out the development branch:
 
@@ -48,9 +50,7 @@ git fetch origin add-devcontainer-vscode-config
 git checkout -b add-devcontainer-vscode-config origin/add-devcontainer-vscode-config
 ```
 
-## Running the Project
-
-Choose one of the setup options below.
+Then, choose one of the setup options below.
 
 ### Option A: Local VS Code Setup
 
