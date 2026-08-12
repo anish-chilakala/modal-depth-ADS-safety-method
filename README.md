@@ -146,7 +146,6 @@ To build and run the project, use Option A, B, or C.
 
 - The first Dev Container startup may take several minutes because the `postCreateCommand` installs Haskell tools through GHCup.
 - If Haskell Language Server reports a version mismatch, wait for container setup to finish and restart the VS Code window inside the container.
-- Compiled `.o` and `.hi` files may be present in the repository. They should not prevent builds, but they are normally excluded through `.gitignore`.
 - To confirm the active Git branch, open **View** → **Source Control** in VS Code or run:
 
 ```bash
