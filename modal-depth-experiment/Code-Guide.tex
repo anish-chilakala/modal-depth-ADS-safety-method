@@ -1,0 +1,894 @@
+\documentclass[11pt]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[margin=1in]{geometry}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{hyperref}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  columns=fullflexible,
+  keepspaces=true,
+  upquote=true,
+  frame=single,
+  showstringspaces=false
+}
+
+\title{Code and Data Guide\\\large modal-depth-experiment}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section*{Scope and reading guide}
+
+This guide explains the seven top-level Haskell source files and the
+\texttt{ScenarioInputs.csv} table. Haskell is reproduced in functional
+sections, with an explanation directly beneath each excerpt. The CSV has
+1,000,000 data rows; rather than repeat a very large, highly repetitive table,
+its schema, row groups, and representative boundary rows are shown here.
+Generated compiler files and build output are not project source files and are
+not included.
+
+\subsection{\texttt{Main.hs}}
+
+\subsubsection{Build notes, module, imports, and modal profiles}
+
+\begin{lstlisting}
+-- ghc -package process -package directory -package filepath -package time -O2 -o sim_test Main.hs && ./sim_test
+-- gzip -dc scenario-logs/ "the file in which you want to open up here" | less
+
+-- highDangerValues = [7.125, 7.750, 8.125, 8.625, 9.000, 9.375, 9.625, 9.875, 7.375, 7.875, 8.375, 8.875, 9.125, 9.500, 9.750, 9.250]
+-- lowDangerValues = [0.125, 0.375, 0.625, 0.875, 1.125, 1.375, 1.625, 1.875, 2.125, 2.375, 2.625, 2.875, 3.125, 3.375, 3.625, 3.875]
+
+module Main where
+
+import Types (ModeSet(..), Action(..), Result(uncertain))
+import Experiment (runSimulation, runSafetyMethodSpeed)
+import Metrics (countScored, accuracy, accuracyForExpected, accuracyForUncertain, accuracyForSpecification, countExpected, countFP, countFN, countUncertainAct, countUncertainNoAct)
+
+{- Setting each modal depth through modeset -}
+unimodal = ModeSet True False False False
+bimodal  = ModeSet True True False False
+trimodal = ModeSet True True True False
+quadmodal = ModeSet True True True True
+\end{lstlisting}
+
+The first comments provide a direct GHC build/run command, a hint for
+inspecting compressed trace output, and historical threshold lists. They do
+not execute. The module imports the simulation, result types, and reporting
+metrics. The four mode values progressively enable one through four
+modalities; the current \texttt{main} selects \texttt{quadmodal}.
+
+\subsubsection{Simulation and accuracy report}
+
+\begin{lstlisting}
+{-This section defines how the simulation is run-}
+main :: IO ()
+main = do
+    (tracePath, results) <- runSimulation quadmodal 1000000
+
+    putStrLn ("Safety trace archive: " ++ tracePath)
+    print (length results)
+    putStrLn "Conventional accuracy (all scenarios):"
+    print (accuracy results)
+    putStrLn "False positives:"
+    print (countFP results)
+    putStrLn "False negatives:"
+    print (countFN results)
+    putStrLn "Accuracy by expected outcome:"
+    putStrLn "Expected ACT scenarios:"
+    putStrLn "Scenario count:"
+    print (countExpected ACT results)
+    putStrLn "Accuracy:"
+    print (accuracyForExpected ACT results)
+    putStrLn "Expected NO_ACT scenarios:"
+    putStrLn "Scenario count:"
+    print (countExpected NO_ACT results)
+    putStrLn "Accuracy:"
+    print (accuracyForExpected NO_ACT results)
+    putStrLn "Uncertain-zone scenarios:"
+    putStrLn "Scenario count:"
+    print (length (filter uncertain results))
+    putStrLn "Accuracy:"
+    print (accuracyForUncertain results)
+
+    putStrLn "Specification Conformance (Did the Safety Method do what it was made to do?):"
+    putStrLn "Scored scenarios:"
+    print (countScored results)
+    putStrLn "Accuracy:"
+    print (accuracyForSpecification results)
+    putStrLn "Uncertain-zone decisions:"
+    putStrLn "ACT Scenarios:"
+    print (countUncertainAct results)
+    putStrLn "NO_ACT Scenarios:"
+    print (countUncertainNoAct results)
+    putStrLn "Expected: 100% specification conformance, conventional accuracy below 100%, and 340,000 ACT decisions in the uncertain zone."
+\end{lstlisting}
+
+\texttt{main} runs one million scenarios and saves a compressed safety trace.
+It then prints overall conventional accuracy, false-positive and
+false-negative counts, accuracy split by expected action, and uncertain-zone
+counts and accuracy. The specification-specific score excludes uncertain
+cases, while the final counters show which actions the policy took inside
+that zone. The final printed expectation is an informational benchmark target,
+not a runtime assertion.
+
+\subsubsection{Safety-method timing report}
+
+\begin{lstlisting}
+    (speedCount, trialCount, meanNs, plusMinusNs) <- runSafetyMethodSpeed
+    putStrLn "Safety method speed (CSV scenarios, no accuracy scoring):"
+    putStrLn "Decision cycles per trial:"
+    print speedCount
+    putStrLn "Trials:"
+    putStrLn ("N = " ++ show trialCount)
+    putStrLn "Num Decision Cycles per Trial:"
+    print(length results)
+    putStrLn "Total Decision Cycles Count:"
+    print(trialCount * length results)
+    putStrLn "Average time per decision cycle:"
+    putStrLn (show (round meanNs) ++ " ms ± " ++ show (round plusMinusNs) ++ " ms of cpu mutator time")
+\end{lstlisting}
+
+After the accuracy report, the program times the policy over CSV scenarios
+without scoring accuracy. It prints the number of scenarios in a trial, the
+trial count, total decision cycles, and the mean per-cycle time with a
+half-range across trials. The returned time values are nanoseconds, although
+the displayed labels say milliseconds; the displayed unit text should
+therefore be interpreted cautiously.
+
+\subsection{\texttt{Types.hs}}
+
+\subsubsection{Language extension and scenario/mode/action inputs}
+
+\begin{lstlisting}
+{-# LANGUAGE UnboxedTuples #-}
+
+module Types where
+
+-- The UNPACK pragma removes the heap pointer and stores the raw Double directly inside the record.
+-- The '!' ensures the value is evaluated instantly, preventing lazy thunks.
+data Scenario = Scenario
+  { c                :: {-# UNPACK #-} !Double
+  , d_a              :: {-# UNPACK #-} !Double
+  , d_e              :: {-# UNPACK #-} !Double
+  , d_c              :: {-# UNPACK #-} !Double
+  , d_s              :: {-# UNPACK #-} !Double
+  , observed_context :: {-# UNPACK #-} !Double
+  } deriving (Show, Eq)
+
+data ModeSet = ModeSet
+  { d_a_active       :: !Bool
+  , d_e_active       :: !Bool
+  , d_c_active       :: !Bool
+  , d_s_active       :: !Bool
+  } deriving (Show, Eq)
+
+data Action = ACT | NO_ACT deriving (Show, Eq)
+\end{lstlisting}
+
+The extension enables unboxed-tuple syntax (none is declared in this module).
+\texttt{Scenario} carries context and four modality values, with strict,
+unpacked numeric fields to reduce lazy allocation overhead. \texttt{ModeSet}
+records which modalities are enabled. \texttt{Action} is the binary decision
+type shared throughout simulation and reporting.
+
+\subsubsection{Thresholds and policy classification state}
+
+\begin{lstlisting}
+data SpecificThreshold = SpecificThreshold
+  { highValues :: [Double]
+  , lowValues :: [Double]
+  } deriving (Show, Eq)
+
+data DangerState = LowDanger | UncertainZone | HighDanger deriving (Show, Eq)
+
+data PolicyState = PolicyState
+  { stateA :: DangerState
+  , stateE :: DangerState
+  , stateC :: DangerState
+  , stateS :: DangerState
+  } deriving (Show, Eq)
+\end{lstlisting}
+
+\texttt{SpecificThreshold} holds the discrete values classified as high or
+low danger. A value not in either list can be represented as
+\texttt{UncertainZone}. \texttt{PolicyState} retains one danger label for
+each modality.
+
+\subsubsection{Trace and scored result records}
+
+\begin{lstlisting}
+data ProbabilityTrace = ProbabilityTrace
+  { beforeProbabilities :: ![Double]
+  , afterProbabilities :: ![Double]
+  , noOpProbability :: !Double
+  } deriving (Show, Eq)
+
+data Result = Result
+  { action           :: !Action
+  , expectedAction   :: !Action
+  , correct          :: !Bool
+  , uncertain        :: !Bool
+  } deriving (Show, Eq)
+\end{lstlisting}
+
+\texttt{ProbabilityTrace} stores model probabilities before and after the
+safety intervention, plus a separate no-op probability. \texttt{Result}
+keeps the actual and expected actions, whether they agree, and whether the
+scenario belongs to the uncertain region.
+
+\subsection{\texttt{Policy.hs}}
+
+\subsubsection{Module imports and configured threshold lists}
+
+\begin{lstlisting}
+{- HLINT ignore "Use camelCase" -}
+module Policy where
+
+import Data.List (sort, sortOn)
+import Types (Scenario(d_a, d_e, d_c, d_s), Action(..), SpecificThreshold(..), DangerState(..), PolicyState(..), ProbabilityTrace(..))
+
+specificThreshold :: SpecificThreshold
+specificThreshold = SpecificThreshold
+  { highValues = [7.125, 7.750, 8.125, 8.625, 9.000, 9.375, 9.625, 9.875, 7.375, 7.875, 8.375, 8.875, 9.125, 9.500, 9.750, 9.250]
+  , lowValues = [0.125, 0.375, 0.625, 0.875, 1.125, 1.375, 1.625, 1.875, 2.125, 2.375, 2.625, 2.875, 3.125, 3.375, 3.625, 3.875]
+  }
+\end{lstlisting}
+
+The HLINT directive suppresses a naming-style suggestion for this module.
+The policy imports sorting functions and the types it consumes or produces.
+\texttt{specificThreshold} defines the exact discrete sets used to categorize
+each modality.
+
+\subsubsection{Danger classification and state refresh}
+
+\begin{lstlisting}
+classify :: SpecificThreshold -> Double -> DangerState
+classify threshold value
+  | value `elem` highValues threshold = HighDanger
+  | value `elem` lowValues threshold = LowDanger
+  | otherwise = UncertainZone
+
+classifyForSafety :: SpecificThreshold -> Double -> DangerState
+classifyForSafety threshold value =
+  case classify threshold value of
+    UncertainZone -> HighDanger
+    danger -> danger
+
+initialPolicyState :: PolicyState
+initialPolicyState = PolicyState UncertainZone UncertainZone UncertainZone UncertainZone
+
+updateStates :: PolicyState -> Scenario -> PolicyState
+updateStates _ scenario = PolicyState
+  { stateA = classifyForSafety specificThreshold (d_a scenario)
+  , stateE = classifyForSafety specificThreshold (d_e scenario)
+  , stateC = classifyForSafety specificThreshold (d_c scenario)
+  , stateS = classifyForSafety specificThreshold (d_s scenario)
+  }
+\end{lstlisting}
+
+\texttt{classify} marks exact high-list values as dangerous, exact low-list
+values as safe, and all other values uncertain. The safety-specific wrapper
+treats uncertainty as high danger (fail-safe). The initial state is uncertain
+for every modality; each call to \texttt{updateStates} replaces all four
+labels from the current scenario, so its prior-state argument is unused.
+
+\subsubsection{Probability conversion and index helpers}
+
+\begin{lstlisting}
+softmax :: [Double] -> [Double]
+softmax logits =
+  let maximumLogit = maximum logits
+      weights = map (exp . subtract maximumLogit) logits
+      totalWeight = sum weights
+  in map (\weight -> weight * 100.0 / totalWeight) weights
+
+maximumIndex :: [(Int, Double)] -> Int
+maximumIndex [] = 0
+maximumIndex ((firstIndex, firstValue):remaining) =
+  fst (foldl choose (firstIndex, firstValue) remaining)
+  where
+    choose best@(_, bestValue) candidate@(_, candidateValue)
+      | candidateValue > bestValue = candidate
+      | otherwise = best
+
+normalize :: [Double] -> [Double]
+normalize values =
+  let total = sum values
+  in map (\value -> value * 100.0 / total) values
+
+assignProbabilities :: Int -> [(Int, Double)] -> [Double]
+assignProbabilities count assignments =
+  [ maybe 0.0 id (lookup index assignments)
+  | index <- [0 .. count - 1]
+  ]
+\end{lstlisting}
+
+\texttt{softmax} turns logits into percentages, subtracting the maximum first
+to improve numerical stability. \texttt{maximumIndex} finds the index of the
+largest value (and uses index zero for an empty input). \texttt{normalize}
+rescales a list to sum to 100. \texttt{assignProbabilities} builds an
+index-ordered list from assignments, using zero for missing indices.
+
+\subsubsection{Rerouting probability mass}
+
+\begin{lstlisting}
+rerouteProbabilities :: [Double] -> Int -> Int -> [Double]
+rerouteProbabilities probabilities dangerousIndex safeIndex =
+  let orderedProbabilities = sort probabilities
+      middleProbabilities = take (length probabilities - 2) (drop 1 orderedProbabilities)
+      remainingIndices = sortOn (probabilities !!)
+        [index | index <- [0 .. length probabilities - 1], index /= dangerousIndex, index /= safeIndex]
+      assignments = (dangerousIndex, head orderedProbabilities)
+        : (safeIndex, last orderedProbabilities)
+        : zip remainingIndices middleProbabilities
+  in normalize (assignProbabilities (length probabilities) assignments)
+\end{lstlisting}
+
+This helper sorts the probability values and assigns the smallest probability
+to the selected dangerous index and the largest to the selected safe index.
+Intermediate probabilities are paired with the other indices in their
+original probability order, then the result is normalized. It assumes there
+are enough probabilities for \texttt{head}, \texttt{last}, and the two
+designated indices.
+
+\subsubsection{No-op probability injection}
+
+\begin{lstlisting}
+fixedNoOpLogit :: Double
+fixedNoOpLogit = case lowValues specificThreshold of
+  value:_ -> value
+  [] -> 0.0
+
+injectNoOpProbabilities :: [Double] -> [Double]
+injectNoOpProbabilities logits =
+  let injectedProbabilities = softmax (logits ++ [fixedNoOpLogit])
+      orderedProbabilities = sort injectedProbabilities
+      existingCount = length logits
+      existingIndices = sortOn (injectedProbabilities !!) [0 .. existingCount - 1]
+      assignments = zip existingIndices (take existingCount orderedProbabilities)
+        ++ [(existingCount, last orderedProbabilities)]
+  in normalize (assignProbabilities (existingCount + 1) assignments)
+\end{lstlisting}
+
+The no-op option gets a fixed logit equal to the first low-danger threshold.
+After calculating softmax across the original actions and this extra option,
+the probabilities are reassigned in sorted order: the no-op receives the
+largest probability, while the original action slots receive the remaining
+values ordered against their original probabilities. The result is
+renormalized.
+
+\subsubsection{Safety decision and top-level policy}
+
+\begin{lstlisting}
+execute :: PolicyState -> [Double] -> (Action, [Double], [Double], Double)
+execute states logits =
+  let labels = [stateA states, stateE states, stateC states, stateS states]
+      probabilities = softmax logits
+      winner = maximumIndex (zip [0..] probabilities)
+      safeIndices =
+        [ (index, probability)
+        | (index, (label, probability)) <- zip [0..] (zip labels probabilities)
+        , label == LowDanger
+        ]
+  in if labels !! winner == LowDanger
+       then (NO_ACT, probabilities, probabilities, 0.0)
+       else case safeIndices of
+         [] ->
+           let injectedProbabilities = injectNoOpProbabilities logits
+           in (ACT, probabilities, take (length logits) injectedProbabilities, last injectedProbabilities)
+         _ ->
+           let safestIndex = maximumIndex safeIndices
+           in (ACT, probabilities, rerouteProbabilities probabilities winner safestIndex, 0.0)
+
+policy :: PolicyState -> Scenario -> (PolicyState, Action, ProbabilityTrace)
+policy previousState scenario =
+  let nextState = updateStates previousState scenario
+      logits = [d_a scenario, d_e scenario, d_c scenario, d_s scenario]
+      (action, before, after, noOp) = execute nextState logits
+      trace = ProbabilityTrace before after noOp
+  in (sum before + sum after + noOp) `seq` (nextState, action, trace)
+\end{lstlisting}
+
+\texttt{execute} computes probabilities over the four modality logits. If the
+highest-probability modality is safe, it returns \texttt{NO\_ACT} with
+probabilities unchanged. Otherwise it returns \texttt{ACT}: if no modality is
+safe, it adds the no-op probability; if a safe modality exists, it reroutes
+probability mass toward the safest safe index and away from the winner.
+\texttt{policy} refreshes classifications, extracts logits, calls
+\texttt{execute}, creates a trace, and uses \texttt{seq} to force the sums
+before returning the tuple.
+
+\subsection{\texttt{Metrics.hs}}
+
+\subsubsection{Accuracy calculations}
+
+\begin{lstlisting}
+module Metrics where
+
+import Types (Result(..), Action(..))
+import Evaluate (falsePositive, falseNegative)
+
+accuracy :: [Result] -> Double
+accuracy = accuracyWhere (const True)
+
+accuracyForExpected :: Action -> [Result] -> Double
+accuracyForExpected expected = accuracyWhere matchesExpected
+    where
+        matchesExpected result = not (uncertain result) && expectedAction result == expected
+
+accuracyForUncertain :: [Result] -> Double
+accuracyForUncertain = accuracyWhere uncertain
+
+-- First 66% only: expected ACT and NO_ACT. Uncertain-zone scenarios are not scored.
+accuracyForSpecification :: [Result] -> Double
+accuracyForSpecification = accuracyWhere (not . uncertain)
+
+accuracyWhere :: (Result -> Bool) -> [Result] -> Double
+accuracyWhere include results =
+    let selected = filter include results
+        total = length selected
+        correctCount = length (filter correct selected)
+    in if total == 0 then 0.0 else fromIntegral correctCount / fromIntegral total
+\end{lstlisting}
+
+\texttt{accuracy} scores every result. \texttt{accuracyForExpected} selects
+only certain scenarios with a specified expected action;
+\texttt{accuracyForUncertain} selects only uncertain cases; and
+\texttt{accuracyForSpecification} excludes uncertain cases. Their common
+helper computes the fraction marked correct and returns zero if nothing was
+selected.
+
+\subsubsection{Counts and error categories}
+
+\begin{lstlisting}
+countScored :: [Result] -> Int
+countScored = length . filter (not . uncertain)
+
+countFP :: [Result] -> Int
+countFP = length . filter falsePositive
+
+countFN :: [Result] -> Int
+countFN = length . filter falseNegative
+
+countUncertainAct :: [Result] -> Int
+countUncertainAct = length . filter isUncertainAct
+    where
+        isUncertainAct result = uncertain result && action result == ACT
+
+countUncertainNoAct :: [Result] -> Int
+countUncertainNoAct = length . filter isUncertainNoAct
+    where
+        isUncertainNoAct result = uncertain result && action result == NO_ACT
+
+countExpected :: Action -> [Result] -> Int
+countExpected expected = length . filter matchesExpected
+    where
+        matchesExpected result = not (uncertain result) && expectedAction result == expected
+\end{lstlisting}
+
+These functions count certain/scored scenarios, false positives, false
+negatives, and each action taken in the uncertain zone. \texttt{countExpected}
+counts only certain cases whose expected action matches its argument.
+
+\subsection{\texttt{Evaluate.hs}}
+
+\subsubsection{Scenario evaluation and error predicates}
+
+\begin{lstlisting}
+module Evaluate where
+
+import Types ( Action(..), Scenario, Result(..), PolicyState, ProbabilityTrace )
+import Policy (policy)
+
+processScenario :: PolicyState -> (Scenario, Action, Bool) -> (PolicyState, Result, ProbabilityTrace)
+processScenario previousState (scenario, expected, isUncertain) =
+    let (nextState, actualAction, trace) = policy previousState scenario
+    in (nextState, Result actualAction expected (actualAction == expected) isUncertain, trace)
+
+falsePositive :: Result -> Bool
+falsePositive r = action r == ACT && not (correct r)
+
+falseNegative :: Result -> Bool
+falseNegative r = action r == NO_ACT && not (correct r)
+\end{lstlisting}
+
+\texttt{processScenario} applies the policy to one input, then combines its
+actual action with the expected action and uncertain flag to produce a
+\texttt{Result}. A false positive is an incorrect \texttt{ACT}; a false
+negative is an incorrect \texttt{NO\_ACT}.
+
+\subsection{\texttt{Experiment.hs}}
+
+\subsubsection{Running the simulation and streaming trace output}
+
+\begin{lstlisting}
+module Experiment where
+
+import Control.Exception (evaluate, onException)
+import Control.Monad (foldM, replicateM)
+import Data.List (intercalate, foldl')
+import Data.Time (defaultTimeLocale, formatTime, getCurrentTime)
+import System.Directory (createDirectoryIfMissing, removeFile)
+import System.CPUTime (getCPUTime)
+import System.Exit (ExitCode(..))
+import System.FilePath ((</>))
+import System.IO (Handle, IOMode(WriteMode), hClose, hPutStr, withBinaryFile)
+import System.IO.Error (catchIOError)
+import System.Process (CreateProcess(..), StdStream(CreatePipe, UseHandle), proc, waitForProcess, withCreateProcess)
+import Text.Printf (printf)
+import Types (ModeSet, PolicyState(..), Result(..), Scenario(..), Action, ProbabilityTrace(..))
+import Scenario (generateScenarios, loadScenarioCases)
+import Evaluate (processScenario)
+import Policy (initialPolicyState, policy)
+
+runSimulation :: ModeSet -> Int -> IO (FilePath, [Result])
+runSimulation _ n = do
+    scenarios <- generateScenarios n
+    createDirectoryIfMissing True "scenario-logs"
+    timestamp <- formatTime defaultTimeLocale "%Y%m%d-%H%M%S%q" <$> getCurrentTime
+    let tracePath = "scenario-logs" </> ("safety-trace-" ++ timestamp ++ ".txt.gz")
+    results <- writeCompressedTrace tracePath $ \traceHandle -> do
+        (_, reversedResults) <- foldM (processAndTrace traceHandle) (initialPolicyState, []) (zip [0..] scenarios)
+        return (reverse reversedResults)
+    return (tracePath, results)
+
+processAndTrace
+    :: Handle
+    -> (PolicyState, [Result])
+    -> (Int, (Scenario, Action, Bool))
+    -> IO (PolicyState, [Result])
+processAndTrace traceHandle (previousState, results) (index, scenarioCase@(scenario, _, _)) = do
+    let (nextState, result, trace) = processScenario previousState scenarioCase
+    hPutStr traceHandle (renderScenarioTrace index scenario result nextState trace)
+    return (nextState, result : results)
+\end{lstlisting}
+
+\texttt{runSimulation} loads up to the requested number of cases, creates the
+trace directory, builds a timestamped archive path, processes every scenario
+in order, and returns the archive path and results. The mode argument is
+currently ignored (as indicated by \texttt{\_}). \texttt{processAndTrace}
+evaluates one case, appends its trace text, and carries forward policy state
+and accumulated results.
+
+\subsubsection{Formatting per-scenario traces}
+
+\begin{lstlisting}
+renderScenarioTrace :: Int -> Scenario -> Result -> PolicyState -> ProbabilityTrace -> String
+renderScenarioTrace index scenario result states trace =
+    intercalate "\n"
+        [ "Scenario " ++ printf "%06d" (index + 1) ++ " (CSV row " ++ show (index + 2) ++ ")"
+        , "Raw logits:"
+        , renderValues [("d_a", d_a scenario), ("d_e", d_e scenario), ("d_c", d_c scenario), ("d_s", d_s scenario)]
+        , "Danger classifications:"
+        , renderValues [("d_a", stateA states), ("d_e", stateE states), ("d_c", stateC states), ("d_s", stateS states)]
+        , "Expected action: " ++ show (expectedAction result)
+        , "Uncertain zone: " ++ show (uncertain result)
+        , "Probabilities before intervention:"
+        , renderPercentages (beforeProbabilities trace)
+        , "Safety decision: " ++ show (action result)
+        , "Probabilities after intervention:"
+        , renderPercentages (afterProbabilities trace)
+        , "  no_op: " ++ formatPercentage (noOpProbability trace)
+        , "  total: " ++ formatPercentage (sum (afterProbabilities trace) + noOpProbability trace)
+        , ""
+        ]
+
+renderValues :: Show value => [(String, value)] -> String
+renderValues = unlines . map (\(name, value) -> "  " ++ name ++ ": " ++ show value)
+
+renderPercentages :: [Double] -> String
+renderPercentages = unlines . map (\(name, value) -> "  " ++ name ++ ": " ++ formatPercentage value)
+    . zip ["d_a", "d_e", "d_c", "d_s"]
+
+formatPercentage :: Double -> String
+formatPercentage = printf "%.6f%%"
+\end{lstlisting}
+
+\texttt{renderScenarioTrace} emits a readable record with a one-based scenario
+number, corresponding CSV row, logits, classifications, expected and actual
+decisions, uncertainty status, and probability values before and after
+intervention. \texttt{renderValues} formats named values;
+\texttt{renderPercentages} associates the four probability positions with
+their modality names; and \texttt{formatPercentage} prints six fractional
+digits and a percent sign.
+
+\subsubsection{Gzip archive lifecycle and failure handling}
+
+\begin{lstlisting}
+writeCompressedTrace :: FilePath -> (Handle -> IO result) -> IO result
+writeCompressedTrace tracePath writeTrace =
+    writeArchive `onException` (removeFile tracePath `catchIOError` (const (return ())))
+  where
+    writeArchive = withBinaryFile tracePath WriteMode $ \archiveHandle ->
+        withCreateProcess
+            ((proc "gzip" ["-c"]) { std_in = CreatePipe, std_out = UseHandle archiveHandle })
+            (\inputHandle _ _ processHandle -> do
+                traceHandle <- maybe (ioError (userError "gzip did not provide an input stream")) return inputHandle
+                result <- writeTrace traceHandle
+                hClose traceHandle
+                exitCode <- waitForProcess processHandle
+                case exitCode of
+                    ExitSuccess -> return result
+                    ExitFailure code -> ioError (userError ("gzip exited with status " ++ show code)))
+\end{lstlisting}
+
+This function pipes trace text into a \texttt{gzip -c} child process while
+writing its compressed output to the archive file. It closes the pipe,
+checks gzip's exit status, and raises an IO error if gzip fails or does not
+provide stdin. If any operation throws, it attempts to remove the incomplete
+archive; an error from that cleanup attempt is ignored.
+
+\subsubsection{Repeated policy-only timing}
+
+\begin{lstlisting}
+speedTrialCount :: Int
+speedTrialCount = 100
+
+-- Time only the safety method (policy) over the CSV scenarios. Accuracy
+-- scoring is skipped so the result is per-decision-cycle runtime.
+-- Returns (cycles per trial, trial count, mean ns/cycle, half-range ns).
+runSafetyMethodSpeed :: IO (Int, Int, Double, Double)
+runSafetyMethodSpeed = do
+    cases <- loadScenarioCases
+    let scenarios = map fst cases
+    _ <- evaluate (foldl' (\() scenario -> scenario `seq` ()) () scenarios)
+    perCycleNanos <- replicateM speedTrialCount (timePerCycleNanos scenarios)
+    let meanNs = sum perCycleNanos / fromIntegral speedTrialCount
+        plusMinusNs = (maximum perCycleNanos - minimum perCycleNanos) / 2.0
+    return (length scenarios, speedTrialCount, meanNs, plusMinusNs)
+
+timePerCycleNanos :: [Scenario] -> IO Double
+timePerCycleNanos scenarios = do
+    start <- getCPUTime
+    let finalState = foldl' applyPolicy initialPolicyState scenarios
+    _ <- evaluate (forcePolicyState finalState)
+    end <- getCPUTime
+    let totalSeconds = fromInteger (end - start) / 1.0e12
+    return (totalSeconds / fromIntegral (length scenarios) * 1.0e9)
+
+applyPolicy :: PolicyState -> Scenario -> PolicyState
+applyPolicy previousState scenario =
+    let (nextState, action, trace) = policy previousState scenario
+    in action `seq` trace `seq` forcePolicyState nextState
+
+forcePolicyState :: PolicyState -> PolicyState
+forcePolicyState states =
+    stateA states `seq`
+    stateE states `seq`
+    stateC states `seq`
+    stateS states `seq`
+    states
+\end{lstlisting}
+
+\texttt{runSafetyMethodSpeed} loads all CSV cases, extracts scenarios, forces
+them before timing, then performs 100 independent timing trials. Each trial
+uses a strict fold through \texttt{policy}, forcing the resulting state,
+action, and trace so that lazy work is included. \texttt{timePerCycleNanos}
+measures CPU time and converts the average duration per scenario to
+nanoseconds. The returned plus/minus figure is half the observed range, not a
+statistical confidence interval.
+
+\subsection{\texttt{Scenario.hs}}
+
+\subsubsection{Configuration and CSV header}
+
+\begin{lstlisting}
+module Scenario where
+import Types (Scenario(..), Action(..), SpecificThreshold(..))
+import Text.Read (readMaybe)
+import Policy (specificThreshold)
+import System.IO (IOMode(WriteMode), hPutStrLn, withFile)
+import Text.Printf (printf)
+
+scenarioContext :: Double
+scenarioContext = 0.1
+
+scenarioCount :: Int
+scenarioCount = 1000000
+
+unidentifiedScenarioValues :: [Double]
+unidentifiedScenarioValues = [4.125, 4.500, 4.875, 5.250, 5.625, 6.000, 6.375, 6.750]
+
+scenarioCsvHeader :: String
+scenarioCsvHeader = "d_a,d_e,d_c,d_s,expected_action"
+\end{lstlisting}
+
+These constants define the context value attached to loaded scenarios, the
+expected number of table rows, and the intermediate modality values used in
+the uncertain portion. The header fixes the CSV column order: four modality
+values followed by the expected action.
+
+\subsubsection{Loading and validating the CSV}
+
+\begin{lstlisting}
+loadScenarioCases :: IO [(Scenario, Action)]
+loadScenarioCases = do
+    contents <- readFile "ScenarioInputs.csv"
+    case lines contents of
+        header:rows
+            | header == scenarioCsvHeader -> do
+                cases <- either (ioError . userError) return
+                    (traverse (uncurry parseScenarioRow) (zip [2..] rows))
+                if length cases == scenarioCount
+                    then return cases
+                    else ioError (userError ("Expected " ++ show scenarioCount ++ " scenario rows, found " ++ show (length cases)))
+            | otherwise -> ioError (userError "ScenarioInputs.csv has an unexpected header")
+        [] -> ioError (userError "ScenarioInputs.csv is empty")
+
+parseScenarioRow :: Int -> String -> Either String (Scenario, Action)
+parseScenarioRow rowNumber row =
+    case splitCsvRow row of
+        [valueA, valueE, valueC, valueS, expectedText] -> do
+            modalityA <- parseModality "d_a" valueA
+            modalityE <- parseModality "d_e" valueE
+            modalityC <- parseModality "d_c" valueC
+            modalityS <- parseModality "d_s" valueS
+            expected <- case expectedText of
+                "ACT" -> Right ACT
+                "NO_ACT" -> Right NO_ACT
+                _ -> Left (rowError "expected_action must be ACT or NO_ACT")
+            return
+                ( Scenario scenarioContext modalityA modalityE modalityC modalityS scenarioContext
+                , expected
+                )
+        _ -> Left (rowError "expected five comma-separated fields")
+  where
+    rowError message = "ScenarioInputs.csv row " ++ show rowNumber ++ ": " ++ message
+    parseModality name valueText =
+        case (readMaybe valueText :: Maybe Double) of
+            Just value
+                | not (isNaN value || isInfinite value) && value >= 0.0 && value <= 10.0 -> Right value
+            _ -> Left (rowError (name ++ " must be a number between 0 and 10"))
+
+splitCsvRow :: String -> [String]
+splitCsvRow row =
+    case break (== ',') row of
+        (field, []) -> [field]
+        (field, _:remaining) -> field : splitCsvRow remaining
+\end{lstlisting}
+
+\texttt{loadScenarioCases} reads the file, verifies the exact header, parses
+every row with its physical CSV line number, and rejects any row count other
+than one million. \texttt{parseScenarioRow} requires exactly five comma
+separated values, converts each modality to a finite number in \([0,10]\),
+checks the action spelling, and constructs a \texttt{Scenario}. Parse
+problems include the CSV row number. The small \texttt{splitCsvRow} helper
+splits on commas; it does not implement quoted-field CSV escaping.
+
+\subsubsection{Marking uncertain cases}
+
+\begin{lstlisting}
+generateScenarios :: Int -> IO [(Scenario, Action, Bool)]
+generateScenarios n = do
+    cases <- loadScenarioCases
+    let count = min scenarioCount (max 0 n)
+    return
+        [ (scenario, expected, index >= 660000)
+        | (index, (scenario, expected)) <- zip [0..] (take count cases)
+        ]
+\end{lstlisting}
+
+The requested count is clamped to the range zero through one million.
+Each output item combines its parsed scenario and expected action with an
+uncertainty flag, which becomes true beginning at zero-based index 660,000
+(CSV row 660,002).
+
+\subsubsection{Writing and composing the generated table}
+
+\begin{lstlisting}
+writeScenarioInputs :: FilePath -> IO ()
+writeScenarioInputs path = withFile path WriteMode $ \handle -> do
+    hPutStrLn handle scenarioCsvHeader
+    mapM_ (hPutStrLn handle . renderScenarioRow) [0 .. scenarioCount - 1]
+
+renderScenarioRow :: Int -> String
+renderScenarioRow index =
+    let threshold = specificThreshold
+        values
+          | index < 330000 =
+              insertAt (index `mod` 4)
+                (highValues threshold !! (index `mod` length (highValues threshold)))
+                (takeRotated 3 (lowValues threshold) (index * 3))
+          | index < 660000 = takeRotated 4 (lowValues threshold) (index * 4)
+          | index < 830000 =
+              insertAt ((index - 660000) `mod` 4)
+                (unidentifiedScenarioValues !! ((index - 660000) `mod` length unidentifiedScenarioValues))
+                (takeRotated 3 (lowValues threshold) ((index - 660000) * 3))
+          | otherwise = takeRotated 4 unidentifiedScenarioValues ((index - 830000) * 4)
+        expected
+          | index < 330000 = "ACT"
+          | index < 660000 = "NO_ACT"
+          | index `mod` 2 == 0 = "ACT"
+          | otherwise = "NO_ACT"
+    in joinWithComma (map (printf "%.3f") values ++ [expected])
+
+takeRotated :: Int -> [a] -> Int -> [a]
+takeRotated count values offset = take count (drop (offset `mod` length values) (cycle values))
+
+insertAt :: Int -> a -> [a] -> [a]
+insertAt index value values =
+    take index values ++ [value] ++ drop index values
+
+joinWithComma :: [String] -> String
+joinWithComma [] = ""
+joinWithComma [value] = value
+joinWithComma (value:remaining) = value ++ "," ++ joinWithComma remaining
+\end{lstlisting}
+
+\texttt{writeScenarioInputs} writes the header and one generated record for
+each index from zero through 999,999. \texttt{renderScenarioRow} defines four
+contiguous blocks: one high plus three low values, four low values, one
+unidentified plus three low values, and four unidentified values. Expected
+actions are always \texttt{ACT} in the first block, always \texttt{NO\_ACT}
+in the second, and alternate in the last two. Values are formatted to three
+decimal places. \texttt{takeRotated} cycles through a list from an offset,
+\texttt{insertAt} inserts the designated value, and \texttt{joinWithComma}
+serializes the fields.
+
+\subsection{\texttt{ScenarioInputs.csv}}
+
+\subsubsection{Header and record shape}
+
+\begin{lstlisting}[basicstyle=\ttfamily\small]
+d_a,d_e,d_c,d_s,expected_action
+7.125,0.125,0.375,0.625,ACT
+0.875,7.750,1.125,1.375,ACT
+1.625,1.875,8.125,2.125,ACT
+2.375,2.625,2.875,8.625,ACT
+\end{lstlisting}
+
+The first line names four modality columns and the ground-truth
+\texttt{expected\_action}. Each subsequent line has four numeric modality
+values and one \texttt{ACT} or \texttt{NO\_ACT} label. The displayed records
+are the table's first four data rows (CSV rows 2--5).
+
+\subsubsection{Four contiguous data groups}
+
+\begin{lstlisting}[basicstyle=\ttfamily\small]
+CSV rows 2--330001:
+  one high-threshold value and three low-threshold values; expected ACT
+
+CSV rows 330002--660001:
+  four low-threshold values; expected NO_ACT
+
+CSV rows 660002--830001:
+  one unidentified/intermediate value and three low-threshold values;
+  expected actions alternate ACT, NO_ACT
+
+CSV rows 830002--1000001:
+  four unidentified/intermediate values;
+  expected actions alternate ACT, NO_ACT
+\end{lstlisting}
+
+These row ranges include the header's offset: the first data record is CSV
+row 2. The ranges contain 330,000, 330,000, 170,000, and 170,000 records,
+respectively, totaling 1,000,000. In the supplied file, there are 500,000
+\texttt{ACT} labels and 500,000 \texttt{NO\_ACT} labels. Values are drawn
+from repeating combinations; the file contains 38 distinct four-value
+modality tuples, with many rows repeating those tuples.
+
+\subsubsection{Rows at group boundaries and end of file}
+
+\begin{lstlisting}[basicstyle=\ttfamily\small]
+CSV row 330001:  3.375,3.625,3.875,9.250,ACT
+CSV row 330002:  0.125,0.375,0.625,0.875,NO_ACT
+CSV row 660001:  3.125,3.375,3.625,3.875,NO_ACT
+CSV row 660002:  4.125,0.125,0.375,0.625,ACT
+CSV row 830001:  3.375,3.625,3.875,6.750,NO_ACT
+CSV row 830002:  4.125,4.500,4.875,5.250,ACT
+CSV row 1000001: 5.625,6.000,6.375,6.750,NO_ACT
+\end{lstlisting}
+
+These examples show the transitions between the four blocks and the final
+record. Intermediate values in the last two blocks are not members of the
+configured low/high threshold lists, so the policy's safety classification
+treats them as high danger even though the CSV marks the scenarios as part of
+the uncertain region for separate scoring.
+
+\end{document}
